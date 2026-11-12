@@ -1,3 +1,4 @@
+import subprocess
 import requests
 import json
 import re
@@ -10,179 +11,243 @@ HEADERS = {
     "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7"
 }
 
+def fetch_html(url):
+    """Tenta prima con requests; se bloccato (403), usa curl di sistema."""
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=12)
+        if resp.status_code == 200:
+            return resp.text
+    except Exception:
+        pass
+
+    # Fallback con curl
+    try:
+        cmd = [
+            "curl", "-s", "-L",
+            "-A", HEADERS["User-Agent"],
+            "-H", f"Accept: {HEADERS['Accept']}",
+            "-H", f"Accept-Language: {HEADERS['Accept-Language']}",
+            url
+        ]
+        out = subprocess.check_output(cmd, text=True, encoding="utf-8", errors="ignore", timeout=20)
+        if len(out) > 1000:
+            return out
+    except Exception as e:
+        print(f"[Subito fetch_html curl fallback error] {e}")
+
+    return None
+
 def scrape_subito(search_url):
     """
     Scraper per Subito.it Matera Immobili.
-    Estrae gli annunci analizzando sia il JSON __NEXT_DATA__ sia il markup HTML.
+    Estrae gli annunci analizzando lo stato strutturato Next.js (__NEXT_DATA__).
     """
     results = []
+    html = fetch_html(search_url)
+    if not html:
+        print("[Subito] Impossibile recuperare l'HTML della pagina di ricerca.")
+        return results
+
     try:
-        resp = requests.get(search_url, headers=HEADERS, timeout=15)
-        if resp.status_code != 200:
-            print(f"[Subito] Errore richiesta HTTP: {resp.status_code}")
+        m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html)
+        if not m:
+            print("[Subito] Tag __NEXT_DATA__ non trovato nell'HTML.")
             return results
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        next_data_script = soup.find("script", id="__NEXT_DATA__")
+        data = json.loads(m.group(1))
+        page_props = data.get("props", {}).get("pageProps", {})
+        init_state = page_props.get("initialState", {}) or page_props.get("state", {})
+        
+        # Può trovarsi in originalList oppure list
+        items = init_state.get("items", {}).get("originalList", [])
+        if not items:
+            items = init_state.get("items", {}).get("list", [])
 
-        if next_data_script:
-            data = json.loads(next_data_script.string)
-            state = data.get("props", {}).get("pageProps", {}).get("state", {})
-            items = state.get("items", {}).get("list", [])
+        for it in items:
+            ad = it.get("item", it)
+            if not ad:
+                continue
 
-            for item in items:
-                ad = item.get("item", {})
-                if not ad:
-                    continue
+            # Escludi uffici/negozi/commerciali/terreni se presenti in categoria
+            cat_name = ad.get("category", {}).get("friendly_name", "").lower()
+            if any(k in cat_name for k in ["uffici", "commerciali", "terreni", "garage"]):
+                continue
 
-                url = ad.get("urls", {}).get("default")
-                title = ad.get("subject", "")
-                desc = ad.get("body", "")
-                full_text = f"{title} {desc}"
+            url = ad.get("urls", {}).get("default") or ad.get("urls", {}).get("mobile")
+            title = ad.get("subject", "")
+            desc = ad.get("body", "")
+            full_text = f"{title} {desc}".lower()
 
-                # Estrazione prezzo
-                price = 0
-                for f in ad.get("features", []):
-                    if f.get("uri") == "/price":
-                        val = f.get("values", [{}])[0].get("key")
-                        try:
-                            price = float(val)
-                        except:
-                            pass
+            features = ad.get("features", {})
+            # Se features è una lista la convertiamo in dict per chiave uri
+            if isinstance(features, list):
+                feat_dict = {f.get("uri"): f for f in features if f.get("uri")}
+            elif isinstance(features, dict):
+                feat_dict = features
+            else:
+                feat_dict = {}
 
-                # Parametri (mq, locali, bagni, piano, ecc.)
-                mq = 0
-                rooms = 0
-                bathrooms = 0
-                floor = ""
-                floor_num = 0
-                has_elevator = None
-                has_garage = 0
-                has_terrace = 0
-                terrace_mq = 0
-                has_garden = 0
-                garden_mq = 0
-                has_balcony = 0
-                is_renovated = 0
-                is_to_renovate = 0
-                is_furnished = 0
+            # Estrazione prezzo
+            price = 0
+            price_feat = feat_dict.get("/price")
+            if price_feat:
+                try:
+                    price_val = price_feat.get("values", [{}])[0].get("key")
+                    price = float(price_val)
+                except Exception:
+                    pass
 
-                for param in ad.get("parameters", []):
-                    label = (param.get("label") or "").lower()
-                    val = param.get("value", "")
-                    val_lower = str(val).lower()
+            # Parametri
+            mq = 0
+            size_feat = feat_dict.get("/size")
+            if size_feat:
+                try:
+                    mq = float(size_feat.get("values", [{}])[0].get("key"))
+                except Exception:
+                    pass
 
-                    if "superficie" in label or "mq" in label:
-                        match = re.search(r'(\d+)', str(val))
-                        if match:
-                            mq = float(match.group(1))
-                    elif "locali" in label or "stanze" in label:
-                        match = re.search(r'(\d+)', str(val))
-                        if match:
-                            rooms = int(match.group(1))
-                    elif "bagni" in label:
-                        match = re.search(r'(\d+)', str(val))
-                        if match:
-                            bathrooms = int(match.group(1))
-                    elif "piano" in label:
-                        floor = val
-                        num_m = re.search(r'(\d+)', str(val))
-                        if num_m:
-                            floor_num = int(num_m.group(1))
-                    elif "ascensore" in label:
-                        has_elevator = (val_lower == "sì" or val_lower == "si" or "presente" in val_lower)
-                    elif "garage" in label or "box" in label or "posto auto" in label:
-                        has_garage = 1 if (val_lower == "sì" or val_lower == "si") else 0
-                    elif "stato" in label:
-                        if "ristrutturato" in val_lower or "ottimo" in val_lower or "nuovo" in val_lower:
-                            is_renovated = 1
-                        elif "da ristrutturare" in val_lower or "buono" in val_lower:
-                            is_to_renovate = 1 if "da ristrutturare" in val_lower else 0
+            rooms = 0
+            room_feat = feat_dict.get("/room")
+            if room_feat:
+                try:
+                    rooms = int(room_feat.get("values", [{}])[0].get("key"))
+                except Exception:
+                    pass
 
-                # Analisi euristica dal testo della descrizione
-                if not bathrooms:
-                    b_match = re.search(r'(\d+)\s*(?:bagni|bagno|servizi)', full_text, re.IGNORECASE)
-                    if b_match:
-                        bathrooms = int(b_match.group(1))
-                    elif "doppio servizio" in full_text or "doppi servizi" in full_text or "due bagni" in full_text:
-                        bathrooms = 2
+            bathrooms = 0
+            bath_feat = feat_dict.get("/bathrooms")
+            if bath_feat:
+                try:
+                    bathrooms = int(bath_feat.get("values", [{}])[0].get("key"))
+                except Exception:
+                    pass
 
-                if not mq:
-                    mq_match = re.search(r'(\d{2,3})\s*(?:mq|metri quadri|m²)', full_text, re.IGNORECASE)
-                    if mq_match:
-                        mq = float(mq_match.group(1))
+            floor = ""
+            floor_num = 0
+            floor_feat = feat_dict.get("/floor")
+            if floor_feat:
+                try:
+                    floor_val = floor_feat.get("values", [{}])[0].get("value")
+                    floor = str(floor_val)
+                    m_f = re.search(r'\d+', floor)
+                    if m_f:
+                        floor_num = int(m_f.group())
+                except Exception:
+                    pass
 
-                # Riconoscimento terrazza e giardino con mq
-                t_match = re.search(r'terrazz[oa]\s*(?:di|da)?\s*(\d{2,3})\s*mq', full_text, re.IGNORECASE)
-                if t_match:
-                    has_terrace = 1
-                    terrace_mq = float(t_match.group(1))
-                elif "terrazzo" in full_text or "terrazza" in full_text:
-                    has_terrace = 1
+            has_elevator = None
+            elev_feat = feat_dict.get("/elevator")
+            if elev_feat:
+                elev_val = elev_feat.get("values", [{}])[0].get("key")
+                has_elevator = (elev_val == "1" or elev_val == "true")
 
-                g_match = re.search(r'giardino\s*(?:di|da)?\s*(\d{2,3})\s*mq', full_text, re.IGNORECASE)
-                if g_match:
-                    has_garden = 1
-                    garden_mq = float(g_match.group(1))
-                elif "giardino" in full_text:
-                    has_garden = 1
+            has_garage = 0
+            parking_feat = feat_dict.get("/parking")
+            if parking_feat:
+                for pv in parking_feat.get("values", []):
+                    pv_lbl = (pv.get("value") or "").lower()
+                    if "box" in pv_lbl or "garage" in pv_lbl or "posto auto" in pv_lbl:
+                        has_garage = 1
 
-                if "balcone" in full_text or "balconi" in full_text:
-                    has_balcony = 1
+            has_balcony = 1 if feat_dict.get("/balcony") else 0
 
-                if "garage" in full_text or "box auto" in full_text or "posto auto" in full_text:
+            # Stato immobile
+            is_renovated = 0
+            is_to_renovate = 0
+            cond_feat = feat_dict.get("/building_condition")
+            if cond_feat:
+                cond_val = (cond_feat.get("values", [{}])[0].get("value") or "").lower()
+                if "ristrutturato" in cond_val or "nuovo" in cond_val or "ottimo" in cond_val:
+                    is_renovated = 1
+                elif "da ristrutturare" in cond_val:
+                    is_to_renovate = 1
+
+            # Fallback e arricchimento da testo
+            if not mq:
+                mq_m = re.search(r'(\d{2,3})\s*(?:mq|m²)', full_text)
+                if mq_m:
+                    mq = float(mq_m.group(1))
+
+            if not bathrooms:
+                b_m = re.search(r'(\d+)\s*(?:bagni|bagno|servizi)', full_text)
+                if b_m:
+                    bathrooms = int(b_m.group(1))
+                elif "doppio servizio" in full_text or "doppi servizi" in full_text:
+                    bathrooms = 2
+
+            has_terrace = 0
+            terrace_mq = 0
+            t_m = re.search(r'terrazz[oa]\s*(?:di|da)?\s*(\d{2,3})\s*mq', full_text)
+            if t_m:
+                has_terrace = 1
+                terrace_mq = float(t_m.group(1))
+            elif "terrazzo" in full_text or "terrazza" in full_text:
+                has_terrace = 1
+
+            has_garden = 0
+            garden_mq = 0
+            g_m = re.search(r'giardino\s*(?:di|da)?\s*(\d{2,3})\s*mq', full_text)
+            if g_m:
+                has_garden = 1
+                garden_mq = float(g_m.group(1))
+            elif "giardino" in full_text:
+                has_garden = 1
+
+            if "balcon" in full_text:
+                has_balcony = 1
+
+            if "garage" in full_text or "box auto" in full_text or "posto auto" in full_text:
+                if not re.search(r'\b(?:senza|no)\s+(?:garage|box|posto auto)\b', full_text):
                     has_garage = 1
 
-                if has_elevator is None:
-                    if "con ascensore" in full_text or "servito da ascensore" in full_text:
-                        has_elevator = True
-                    elif "senza ascensore" in full_text or "no ascensore" in full_text:
-                        has_elevator = False
+            if has_elevator is None:
+                if re.search(r'\b(?:con|servito da|dotato di)\s+ascensore\b', full_text):
+                    has_elevator = True
+                elif re.search(r'\b(?:senza|no)\s+ascensore\b', full_text):
+                    has_elevator = False
 
-                if "arredato" in full_text or "ammobiliato" in full_text:
-                    is_furnished = 1
+            is_furnished = 1 if "arredato" in full_text or "ammobiliato" in full_text else 0
 
-                # Immagine di copertina
-                images = ad.get("images", [])
-                img_url = images[0].get("cdn_base_url") if images else ""
+            # Immagine di copertina
+            images = ad.get("images", [])
+            img_url = images[0].get("cdn_base_url") if images else ""
 
-                # Zona dal portale
-                geo = ad.get("geo", {})
-                portal_zone = geo.get("town", {}).get("value", "")
+            # Geo town
+            geo = ad.get("geo", {})
+            town = geo.get("town", {}).get("value", "")
 
-                agency_ref = extract_agency_ref(full_text)
-                fingerprint = generate_fingerprint(price, mq, floor_num or floor, portal_zone, bathrooms)
+            agency_ref = extract_agency_ref(full_text)
+            fingerprint = generate_fingerprint(price, mq, floor_num or floor, town, bathrooms)
 
-                results.append({
-                    "external_id": str(ad.get("urn", "")),
-                    "url": url,
-                    "title": title,
-                    "description": desc,
-                    "price": price,
-                    "mq": mq,
-                    "rooms": rooms,
-                    "bedrooms": max(rooms - 2, 0) if rooms >= 3 else 0, # stima camere da vani totali se non esplicitata
-                    "bathrooms": bathrooms,
-                    "floor": floor,
-                    "floor_number": floor_num,
-                    "has_elevator": has_elevator,
-                    "has_terrace": has_terrace,
-                    "terrace_mq": terrace_mq,
-                    "has_garden": has_garden,
-                    "garden_mq": garden_mq,
-                    "has_balcony": has_balcony,
-                    "has_garage": has_garage,
-                    "is_renovated": is_renovated,
-                    "is_to_renovate": is_to_renovate,
-                    "is_furnished": is_furnished,
-                    "zone_name": portal_zone,
-                    "image_url": img_url,
-                    "agency_ref": agency_ref,
-                    "fingerprint": fingerprint
-                })
+            results.append({
+                "external_id": str(ad.get("urn", "")),
+                "url": url,
+                "title": title,
+                "description": desc,
+                "price": price,
+                "mq": mq,
+                "rooms": rooms,
+                "bedrooms": max(rooms - 2, 0) if rooms >= 3 else 0,
+                "bathrooms": bathrooms,
+                "floor": floor,
+                "floor_number": floor_num,
+                "has_elevator": has_elevator,
+                "has_terrace": has_terrace,
+                "terrace_mq": terrace_mq,
+                "has_garden": has_garden,
+                "garden_mq": garden_mq,
+                "has_balcony": has_balcony,
+                "has_garage": has_garage,
+                "is_renovated": is_renovated,
+                "is_to_renovate": is_to_renovate,
+                "is_furnished": is_furnished,
+                "zone_name": town,
+                "image_url": img_url,
+                "agency_ref": agency_ref,
+                "fingerprint": fingerprint
+            })
 
     except Exception as e:
-        print(f"[Subito Scraper Error] {e}")
+        print(f"[Subito Scraper Parsing Error] {e}")
 
     return results
-

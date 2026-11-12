@@ -16,6 +16,9 @@ async def run_scan(bot_instance=None, chat_id=None):
     """
     sources = get_sources(active_only=True)
     new_approved = 0
+    prime_count = 0
+    quasi_count = 0
+    val_count = 0
     new_duplicates = 0
     scartati = 0
 
@@ -62,36 +65,66 @@ async def run_scan(bot_instance=None, chat_id=None):
                 continue
 
             # Valutazione di Pertinenza
-            category, score, reason, zone_name, tier = evaluate_listing(item)
+            category, score, missing_params, zone_name, tier = evaluate_listing(item)
             item["category"] = category
             item["score"] = score
-            item["rejection_reason"] = reason
+            item["missing_params"] = missing_params
+            item["rejection_reason"] = "; ".join(missing_params) if isinstance(missing_params, list) else str(missing_params)
             item["source_id"] = src["id"]
 
             listing_id = save_listing(item)
 
-            if category in ["PRIMA_SCELTA", "SECONDA_SCELTA"]:
+            if category in ["PRIMA_SCELTA", "QUASI_PERFETTO", "VALUTABILE"]:
                 new_approved += 1
+                if category == "PRIMA_SCELTA":
+                    prime_count += 1
+                elif category == "QUASI_PERFETTO":
+                    quasi_count += 1
+                elif category == "VALUTABILE":
+                    val_count += 1
+
                 if bot_instance and chat_id:
                     await send_telegram_alert(bot_instance, chat_id, item, listing_id)
             else:
                 scartati += 1
 
-    print(f"[Monitor] Scansione terminata: {new_approved} idonei, {new_duplicates} doppioni unificati, {scartati} scartati.\n")
+    print(f"[Monitor] Scansione terminata: {new_approved} idonei ({prime_count} perfetti, {quasi_count} quasi perfetti, {val_count} valutabili), {new_duplicates} doppioni unificati, {scartati} scartati.\n")
     return {
         "approved": new_approved,
+        "approved_prime": prime_count,
+        "approved_quasi": quasi_count,
+        "approved_valutabili": val_count,
         "duplicates": new_duplicates,
         "rejected": scartati
     }
 
 async def send_telegram_alert(bot, chat_id, item, listing_id):
-    """Invia una notifica formattata con pulsanti interattivi."""
+    """Invia una notifica formattata con pulsanti interattivi e banner dei parametri mancanti."""
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-    badge = "🌟 *PRIMA SCELTA*" if item["category"] == "PRIMA_SCELTA" else "📌 *SECONDA SCELTA*"
-    tier_label = f"Tier {item.get('tier', 1)}" if item.get('tier') else "Zona"
+    cat = item.get("category", "")
+    missing_list = item.get("missing_params") or []
+    if isinstance(missing_list, str):
+        missing_list = [m.strip() for m in missing_list.split(";") if m.strip()]
 
-    # Preparazione testo
+    if cat == "PRIMA_SCELTA":
+        badge = "🌟 *PRIMA SCELTA (Match Perfetto: 9/9)*"
+        missing_section = "✨ *Rispetta TUTTI i parametri richiesti!*\n"
+    elif cat == "QUASI_PERFETTO":
+        badge = "🟠 *QUASI PERFETTO (Rispetta 8 su 9 parametri)*"
+        lines = [f"• ❌ {m}" for m in missing_list]
+        missing_section = "⚠️ *PARAMETRO NON RISPETTATO:*\n" + "\n".join(lines) + "\n"
+    elif cat == "VALUTABILE":
+        badge = "🟡 *SECONDA SCELTA (Rispetta 7 su 9 parametri)*"
+        lines = [f"• ❌ {m}" for m in missing_list]
+        missing_section = f"⚠️ *PARAMETRI NON RISPETTATI ({len(missing_list)}):*\n" + "\n".join(lines) + "\n"
+    else:
+        badge = "📌 *ANNUNCIO SEGNALATO*"
+        missing_section = ""
+
+    tier_label = f"Tier {item.get('tier', 1)}" if item.get('tier') else "Zona Esterna"
+
+    # Preparazione campi
     price_str = f"{item.get('price'):,.0f} €".replace(",", ".") if item.get('price') else "Trattativa riservata"
     mq_str = f"{item.get('mq'):.0f} mq" if item.get('mq') else "N/D"
     rooms_str = f"{item.get('bedrooms', 0)} camere ({item.get('rooms', 0)} vani)" if item.get('rooms') else "N/D"
@@ -114,7 +147,8 @@ async def send_telegram_alert(bot, chat_id, item, listing_id):
     spazi_str = ", ".join(spazi_aperti) if spazi_aperti else "Nessuno specificato"
 
     caption = (
-        f"{badge} (Score: {item.get('score', 0):.0f}/100)\n\n"
+        f"{badge} (Score: {item.get('score', 0):.0f}%)\n\n"
+        f"{missing_section}\n"
         f"🏠 *{item.get('title')}*\n"
         f"📍 *Zona:* {item.get('zone_name')} ({tier_label})\n"
         f"💰 *Prezzo:* {price_str}\n"
@@ -124,7 +158,6 @@ async def send_telegram_alert(bot, chat_id, item, listing_id):
         f"🌿 *Spazi Aperti:* {spazi_str}\n"
         f"🅿️ *Garage/Posto Auto:* {garage_str}\n"
         f"🛋️ *Arredo:* {arredo_str}\n\n"
-        f"📝 *Note:* _{item.get('rejection_reason', 'Idoneo')}_\n\n"
         f"🔗 [Apri Annuncio Originale]({item.get('url')})"
     )
 

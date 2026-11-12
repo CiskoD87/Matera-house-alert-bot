@@ -301,8 +301,10 @@ def get_stats():
     total = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM listings WHERE category = 'PRIMA_SCELTA'")
     prime = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM listings WHERE category = 'SECONDA_SCELTA'")
-    seconde = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM listings WHERE category = 'QUASI_PERFETTO'")
+    quasi = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM listings WHERE category = 'VALUTABILE'")
+    valutabili = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM listings WHERE category = 'SCARTATO'")
     scartati = cursor.fetchone()[0]
     cursor.execute("SELECT COUNT(*) FROM duplicates")
@@ -313,7 +315,8 @@ def get_stats():
     return {
         "total": total,
         "prima_scelta": prime,
-        "seconda_scelta": seconde,
+        "quasi_perfetto": quasi,
+        "valutabile": valutabili,
         "scartati": scartati,
         "duplicati": duplicati,
         "preferiti": preferiti

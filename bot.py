@@ -98,9 +98,11 @@ async def trigger_scan(chat_id, bot):
 
     await status_msg.edit_text(
         f"✅ *Scansione completata!*\n\n"
-        f"• 🌟 Annunci idonei trovati e notificati: *{res['approved']}*\n"
+        f"• 🌟 Match Perfetti (9/9): *{res.get('approved_prime', 0)}*\n"
+        f"• 🟠 Quasi Perfetti (-1 parametro): *{res.get('approved_quasi', 0)}*\n"
+        f"• 🟡 Valutabili (-2 parametri): *{res.get('approved_valutabili', 0)}*\n"
         f"• ♻️ Annunci duplicati unificati: *{res['duplicates']}*\n"
-        f"• 🗑️ Annunci scartati (fuori dai tuoi filtri): *{res['rejected']}*\n\n"
+        f"• 🗑️ Annunci scartati (troppi difetti o aste): *{res['rejected']}*\n\n"
         f"_I prossimi controlli automatici avverranno alle 08:30 e alle 20:30._",
         parse_mode="Markdown"
     )
@@ -208,10 +210,11 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
         "📊 *Statistiche Monitoraggio:* \n\n"
         f"• Annunci totali esaminati: *{stats['total']}*\n"
-        f"• 🌟 Prima Scelta approvati: *{stats['prima_scelta']}*\n"
-        f"• 📌 Seconda Scelta approvati: *{stats['seconda_scelta']}*\n"
+        f"• 🌟 Prima Scelta (Match 100%): *{stats.get('prima_scelta', 0)}*\n"
+        f"• 🟠 Quasi Perfetti (-1 parametro): *{stats.get('quasi_perfetto', 0)}*\n"
+        f"• 🟡 Valutabili (-2 parametri): *{stats.get('valutabile', 0)}*\n"
         f"• ♻️ Doppioni identificati e unificati: *{stats['duplicati']}*\n"
-        f"• 🗑️ Annunci scartati (fuori parametri): *{stats['scartati']}*\n"
+        f"• 🗑️ Annunci scartati: *{stats['scartati']}*\n"
         f"• ⭐ Immobili salvati nei preferiti: *{stats['preferiti']}*"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
