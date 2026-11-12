@@ -102,6 +102,7 @@ async def run_scan(bot_instance=None, chat_id=None):
 
 async def send_telegram_alert(bot, chat_id, item, listing_id):
     """Invia una notifica formattata con pulsanti interattivi e banner dei parametri mancanti."""
+    # pyrefly: ignore[missing-import]
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     cat = item.get("category", "")

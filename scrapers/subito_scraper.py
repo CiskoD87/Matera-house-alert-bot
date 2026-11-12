@@ -12,28 +12,24 @@ HEADERS = {
 }
 
 def fetch_html(url):
-    """Tenta prima con requests; se bloccato (403), usa curl di sistema."""
+    """
+    Recupera l'HTML simulando fedelmente un browser reale con curl_cffi (TLS impersonation),
+    evitando i blocchi 403 di Cloudflare sia in locale che sui server Linux (Render).
+    """
+    try:
+        from curl_cffi import requests as cffi_requests
+        resp = cffi_requests.get(url, impersonate="chrome124", timeout=15)
+        if resp.status_code == 200:
+            return resp.text
+    except Exception as e:
+        print(f"[Subito curl_cffi error] {e}")
+
     try:
         resp = requests.get(url, headers=HEADERS, timeout=12)
         if resp.status_code == 200:
             return resp.text
     except Exception:
         pass
-
-    # Fallback con curl
-    try:
-        cmd = [
-            "curl", "-s", "-L",
-            "-A", HEADERS["User-Agent"],
-            "-H", f"Accept: {HEADERS['Accept']}",
-            "-H", f"Accept-Language: {HEADERS['Accept-Language']}",
-            url
-        ]
-        out = subprocess.check_output(cmd, text=True, encoding="utf-8", errors="ignore", timeout=20)
-        if len(out) > 1000:
-            return out
-    except Exception as e:
-        print(f"[Subito fetch_html curl fallback error] {e}")
 
     return None
 
