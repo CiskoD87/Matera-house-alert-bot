@@ -1,0 +1,7 @@
+venv/
+.env
+__pycache__/
+*.pyc
+data/fb_session.json
+data/*.db-journal
+.DS_Store
