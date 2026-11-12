@@ -210,12 +210,19 @@ def toggle_source(source_id, active_state):
 
 # Helper Annunci e Deduplicazione
 def is_url_seen(url):
+    """
+    Ritorna True SOLO se l'annuncio è già stato notificato su Telegram.
+    Se era stato precedentemente scartato, permette la rivalutazione con i nuovi filtri!
+    """
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM listings WHERE url = ?", (url,))
-    found = cursor.fetchone() is not None
+    cursor.execute("SELECT id, telegram_message_id FROM listings WHERE url = ?", (url,))
+    row = cursor.fetchone()
     conn.close()
-    return found
+    if not row:
+        return False
+    # Se è già stato inviato su Telegram, non inviarlo due volte
+    return row["telegram_message_id"] is not None
 
 def find_duplicate(fingerprint=None, agency_ref=None):
     """Verifica se l'annuncio esiste già per impronta o riferimento agenzia."""
@@ -241,22 +248,33 @@ def find_duplicate(fingerprint=None, agency_ref=None):
 def save_listing(listing_data):
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
-        INSERT INTO listings (
-            source_id, external_id, url, title, price, mq, rooms, bedrooms,
-            bathrooms, floor, floor_number, has_elevator, has_terrace, terrace_mq,
-            has_garden, garden_mq, has_balcony, has_garage, is_renovated,
-            is_to_renovate, is_furnished, zone_name, tier, category, score,
-            rejection_reason, image_url, description, agency_ref, fingerprint
-        ) VALUES (
-            :source_id, :external_id, :url, :title, :price, :mq, :rooms, :bedrooms,
-            :bathrooms, :floor, :floor_number, :has_elevator, :has_terrace, :terrace_mq,
-            :has_garden, :garden_mq, :has_balcony, :has_garage, :is_renovated,
-            :is_to_renovate, :is_furnished, :zone_name, :tier, :category, :score,
-            :rejection_reason, :image_url, :description, :agency_ref, :fingerprint
-        )
-    """, listing_data)
-    listing_id = cursor.lastrowid
+    cursor.execute("SELECT id FROM listings WHERE url = :url", listing_data)
+    row = cursor.fetchone()
+    if row:
+        listing_id = row["id"]
+        cursor.execute("""
+            UPDATE listings SET
+                category = :category, score = :score, rejection_reason = :rejection_reason,
+                zone_name = :zone_name, tier = :tier, price = :price, mq = :mq
+            WHERE id = :id
+        """, {**listing_data, "id": listing_id})
+    else:
+        cursor.execute("""
+            INSERT INTO listings (
+                source_id, external_id, url, title, price, mq, rooms, bedrooms,
+                bathrooms, floor, floor_number, has_elevator, has_terrace, terrace_mq,
+                has_garden, garden_mq, has_balcony, has_garage, is_renovated,
+                is_to_renovate, is_furnished, zone_name, tier, category, score,
+                rejection_reason, image_url, description, agency_ref, fingerprint
+            ) VALUES (
+                :source_id, :external_id, :url, :title, :price, :mq, :rooms, :bedrooms,
+                :bathrooms, :floor, :floor_number, :has_elevator, :has_terrace, :terrace_mq,
+                :has_garden, :garden_mq, :has_balcony, :has_garage, :is_renovated,
+                :is_to_renovate, :is_furnished, :zone_name, :tier, :category, :score,
+                :rejection_reason, :image_url, :description, :agency_ref, :fingerprint
+            )
+        """, listing_data)
+        listing_id = cursor.lastrowid
     conn.commit()
     conn.close()
     return listing_id

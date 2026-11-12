@@ -69,6 +69,8 @@ async def run_scan(bot_instance=None, chat_id=None):
             item["category"] = category
             item["score"] = score
             item["missing_params"] = missing_params
+            item["zone_name"] = zone_name or "Matera"
+            item["tier"] = tier if tier is not None else 0
             item["rejection_reason"] = "; ".join(missing_params) if isinstance(missing_params, list) else str(missing_params)
             item["source_id"] = src["id"]
 
